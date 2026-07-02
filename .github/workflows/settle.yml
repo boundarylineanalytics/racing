@@ -1,0 +1,59 @@
+name: Settle bets
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 21 * * *'
+    - cron: '0 9 * * *'
+permissions:
+  contents: write
+jobs:
+  settle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const html = fs.readFileSync('index.html','utf8');
+            const a = html.indexOf('var T=') + 6;
+            const b = html.indexOf('];', a);
+            const T = JSON.parse(html.slice(a, b+1));
+            const nz = s => (s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+            const NL = String.fromCharCode(10);
+            const months = {January:'01',February:'02',March:'03',April:'04',May:'05',June:'06',July:'07',August:'08',September:'09',October:'10',November:'11',December:'12'};
+            const cache = {};
+            async function getRows(dstr){
+              const p = dstr.split(' ');
+              const key = String(p[1]).padStart(2,'0') + months[p[2]] + '2026';
+              if (cache[key] !== undefined) return cache[key];
+              let rows = null;
+              try {
+                const r = await fetch('https://promo.betfair.com/betfairsp/prices/dwbfpricesauswin' + key + '.csv');
+                if (r.ok) {
+                  const txt = await r.text();
+                  const lines = txt.split(NL).filter(x => x.length > 3);
+                  const hdr = lines[0].split(',');
+                  const iM = hdr.indexOf('MENU_HINT'), iS = hdr.indexOf('SELECTION_NAME'), iW = hdr.indexOf('WIN_LOSE'), iB = hdr.indexOf('BSP');
+                  rows = lines.slice(1).map(l => { const c = l.split(','); return { menu: c[iM]||'', sel: c[iS]||'', wl: c[iW]||'', bsp: parseFloat(c[iB]) }; });
+                }
+              } catch (e) {}
+              cache[key] = rows; return rows;
+            }
+            let changed = false;
+            for (const bt of T) {
+              if (bt.result) continue;
+              const rows = await getRows(bt.date);
+              if (!rows) continue;
+              const tk = nz(bt.meet), hn = nz(bt.horse);
+              const row = rows.find(r => nz(r.menu).indexOf(tk) >= 0 && nz(r.sel).replace(/^[0-9]+/,'') === hn);
+              if (row) { bt.result = row.wl === '1' ? 'W' : 'L'; bt.bsp = isFinite(row.bsp) ? row.bsp : null; changed = true; core.info('settled ' + bt.meet + ' ' + bt.horse + ' ' + bt.result); }
+            }
+            if (changed) { const out = html.slice(0, a) + JSON.stringify(T) + html.slice(b+1); fs.writeFileSync('index.html', out); core.info('updated index.html'); } else { core.info('no changes'); }
+      - name: Commit
+        run: |
+          git config user.name settle-bot
+          git config user.email actions@github.com
+          git add index.html
+          git commit -m 'Auto-settle bets from Betfair SP' || echo no-changes
+          git push || echo nothing-to-push
