@@ -42,7 +42,7 @@ jobs:
             }
             let changed = false;
             for (const bt of T) {
-              if (bt.result) continue;
+              if (bt.bsp || bt.result === 'V') continue;
               const rows = await getRows(bt.date);
               if (!rows) continue;
               const tk = nz(bt.meet), hn = nz(bt.horse);
