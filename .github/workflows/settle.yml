@@ -21,11 +21,12 @@ jobs:
             const T = JSON.parse(html.slice(a, b+1));
             const nz = s => (s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
             const NL = String.fromCharCode(10);
-            const months = {January:'01',February:'02',March:'03',April:'04',May:'05',June:'06',July:'07',August:'08',September:'09',October:'10',November:'11',December:'12'};
+            const months = {January:1,February:2,March:3,April:4,May:5,June:6,July:7,August:8,September:9,October:10,November:11,December:12};
             const cache = {};
             async function getRows(dstr){
               const p = dstr.split(' ');
-              const key = String(p[1]).padStart(2,'0') + months[p[2]] + '2026';
+              const d = new Date(Date.UTC(2026, months[p[2]]-1, parseInt(p[1],10)+1));
+              const key = String(d.getUTCDate()).padStart(2,'0') + String(d.getUTCMonth()+1).padStart(2,'0') + d.getUTCFullYear();
               if (cache[key] !== undefined) return cache[key];
               let rows = null;
               try {
@@ -33,8 +34,8 @@ jobs:
                 if (r.ok) {
                   const txt = await r.text();
                   const lines = txt.split(NL).filter(x => x.length > 3);
-                  const hdr = lines[0].split(',');
-                  const iM = hdr.indexOf('MENU_HINT'), iS = hdr.indexOf('SELECTION_NAME'), iW = hdr.indexOf('WIN_LOSE'), iB = hdr.indexOf('BSP');
+                  const hdr = lines[0].toLowerCase().split(',');
+                  const iM = hdr.indexOf('menu_hint'), iS = hdr.indexOf('selection_name'), iW = hdr.indexOf('win_lose'), iB = hdr.indexOf('bsp');
                   rows = lines.slice(1).map(l => { const c = l.split(','); return { menu: c[iM]||'', sel: c[iS]||'', wl: c[iW]||'', bsp: parseFloat(c[iB]) }; });
                 }
               } catch (e) {}
