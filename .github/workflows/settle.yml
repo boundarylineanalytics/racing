@@ -30,7 +30,8 @@ jobs:
               if (cache[key] !== undefined) return cache[key];
               let rows = null;
               try {
-                const r = await fetch('https://promo.betfair.com/betfairsp/prices/dwbfpricesauswin' + key + '.csv', { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                const src = 'https://promo.betfair.com/betfairsp/prices/dwbfpricesauswin' + key + '.csv';
+                const r = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(src));
                 core.info('fetch ' + key + ' status ' + r.status);
                 if (r.ok) {
                   const txt = await r.text();
@@ -38,7 +39,7 @@ jobs:
                   const hdr = lines[0].toLowerCase().split(',');
                   const iM = hdr.indexOf('menu_hint'), iS = hdr.indexOf('selection_name'), iW = hdr.indexOf('win_lose'), iB = hdr.indexOf('bsp');
                   rows = lines.slice(1).map(l => { const c = l.split(','); return { menu: c[iM]||'', sel: c[iS]||'', wl: c[iW]||'', bsp: parseFloat(c[iB]) }; });
-                  core.info('rows ' + rows.length);
+                  core.info('rows ' + rows.length + ' hdrIdx ' + iM + ',' + iS + ',' + iW + ',' + iB);
                 }
               } catch (e) { core.info('fetch error ' + key + ' ' + e.message); }
               cache[key] = rows; return rows;
