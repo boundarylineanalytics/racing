@@ -30,15 +30,17 @@ jobs:
               if (cache[key] !== undefined) return cache[key];
               let rows = null;
               try {
-                const r = await fetch('https://promo.betfair.com/betfairsp/prices/dwbfpricesauswin' + key + '.csv');
+                const r = await fetch('https://promo.betfair.com/betfairsp/prices/dwbfpricesauswin' + key + '.csv', { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                core.info('fetch ' + key + ' status ' + r.status);
                 if (r.ok) {
                   const txt = await r.text();
                   const lines = txt.split(NL).filter(x => x.length > 3);
                   const hdr = lines[0].toLowerCase().split(',');
                   const iM = hdr.indexOf('menu_hint'), iS = hdr.indexOf('selection_name'), iW = hdr.indexOf('win_lose'), iB = hdr.indexOf('bsp');
                   rows = lines.slice(1).map(l => { const c = l.split(','); return { menu: c[iM]||'', sel: c[iS]||'', wl: c[iW]||'', bsp: parseFloat(c[iB]) }; });
+                  core.info('rows ' + rows.length);
                 }
-              } catch (e) {}
+              } catch (e) { core.info('fetch error ' + key + ' ' + e.message); }
               cache[key] = rows; return rows;
             }
             let changed = false;
@@ -48,7 +50,7 @@ jobs:
               if (!rows) continue;
               const tk = nz(bt.meet), hn = nz(bt.horse);
               const row = rows.find(r => nz(r.menu).indexOf(tk) >= 0 && nz(r.sel).replace(/^[0-9]+/,'') === hn);
-              if (row) { bt.result = row.wl === '1' ? 'W' : 'L'; bt.bsp = isFinite(row.bsp) ? row.bsp : null; changed = true; core.info('settled ' + bt.meet + ' ' + bt.horse + ' ' + bt.result); }
+              if (row) { bt.result = row.wl === '1' ? 'W' : 'L'; bt.bsp = isFinite(row.bsp) ? row.bsp : null; changed = true; core.info('settled ' + bt.meet + ' ' + bt.horse + ' ' + bt.result + ' ' + bt.bsp); }
             }
             if (changed) { const out = html.slice(0, a) + JSON.stringify(T) + html.slice(b+1); fs.writeFileSync('index.html', out); core.info('updated index.html'); } else { core.info('no changes'); }
       - name: Commit
