@@ -12,52 +12,65 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/github-script@v7
+        env:
+          BF_APP_KEY: ${{ secrets.BF_APP_KEY }}
+          BF_USERNAME: ${{ secrets.BF_USERNAME }}
+          BF_PASSWORD: ${{ secrets.BF_PASSWORD }}
         with:
           script: |
             const fs = require('fs');
+            const APP = process.env.BF_APP_KEY, U = process.env.BF_USERNAME, P = process.env.BF_PASSWORD;
+            const nz = s => (s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+            const pad = n => String(n).padStart(2,'0');
+            const months = {January:1,February:2,March:3,April:4,May:5,June:6,July:7,August:8,September:9,October:10,November:11,December:12};
             const html = fs.readFileSync('index.html','utf8');
             const a = html.indexOf('var T=') + 6;
             const b = html.indexOf('];', a);
             const T = JSON.parse(html.slice(a, b+1));
-            const nz = s => (s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
-            const NL = String.fromCharCode(10);
-            const months = {January:1,February:2,March:3,April:4,May:5,June:6,July:7,August:8,September:9,October:10,November:11,December:12};
-            const cache = {};
-            async function getRows(dstr){
-              const p = dstr.split(' ');
-              const d = new Date(Date.UTC(2026, months[p[2]]-1, parseInt(p[1],10)+1));
-              const key = String(d.getUTCDate()).padStart(2,'0') + String(d.getUTCMonth()+1).padStart(2,'0') + d.getUTCFullYear();
-              if (cache[key] !== undefined) return cache[key];
-              let rows = null;
-              try {
-                const src = 'https://promo.betfair.com/betfairsp/prices/dwbfpricesauswin' + key + '.csv';
-                const r = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(src));
-                core.info('fetch ' + key + ' status ' + r.status);
-                if (r.ok) {
-                  const txt = await r.text();
-                  const lines = txt.split(NL).filter(x => x.length > 3);
-                  const hdr = lines[0].toLowerCase().split(',');
-                  const iM = hdr.indexOf('menu_hint'), iS = hdr.indexOf('selection_name'), iW = hdr.indexOf('win_lose'), iB = hdr.indexOf('bsp');
-                  rows = lines.slice(1).map(l => { const c = l.split(','); return { menu: c[iM]||'', sel: c[iS]||'', wl: c[iW]||'', bsp: parseFloat(c[iB]) }; });
-                  core.info('rows ' + rows.length + ' hdrIdx ' + iM + ',' + iS + ',' + iW + ',' + iB);
-                }
-              } catch (e) { core.info('fetch error ' + key + ' ' + e.message); }
-              cache[key] = rows; return rows;
-            }
+            const lr = await fetch('https://identitysso.betfair.com/api/login', { method:'POST', headers:{ 'X-Application':APP, 'Content-Type':'application/x-www-form-urlencoded', 'Accept':'application/json' }, body:'username='+encodeURIComponent(U)+'&password='+encodeURIComponent(P) });
+            const lj = await lr.json();
+            core.info('login ' + lj.status + ' ' + (lj.error||''));
+            if (lj.status !== 'SUCCESS') { return; }
+            const TOKEN = lj.token;
+            async function bapi(op, body){ const r = await fetch('https://api.betfair.com/exchange/betting/rest/v1.0/'+op+'/', { method:'POST', headers:{ 'X-Application':APP, 'X-Authentication':TOKEN, 'Content-Type':'application/json', 'Accept':'application/json' }, body:JSON.stringify(body) }); return r.json(); }
+            function betInfo(t){ const p = t.date.split(' '); return { y:2026, m:months[p[2]], d:parseInt(p[1],10) }; }
+            function aestDate(iso){ const t = new Date(iso).getTime() + 10*3600*1000; const d = new Date(t); return d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1)+'-'+pad(d.getUTCDate()); }
+            const pending = T.filter(t => !t.bsp && t.result !== 'V');
+            const byDate = {};
+            pending.forEach(t => { const bi = betInfo(t); const key = bi.y+'-'+pad(bi.m)+'-'+pad(bi.d); byDate[key] = byDate[key] || {info:bi, venues:{}, bets:[]}; byDate[key].venues[t.meet]=1; byDate[key].bets.push(t); });
             let changed = false;
-            for (const bt of T) {
-              if (bt.bsp || bt.result === 'V') continue;
-              const rows = await getRows(bt.date);
-              if (!rows) continue;
-              const tk = nz(bt.meet), hn = nz(bt.horse);
-              const row = rows.find(r => nz(r.menu).indexOf(tk) >= 0 && nz(r.sel).replace(/^[0-9]+/,'') === hn);
-              if (row) { bt.result = row.wl === '1' ? 'W' : 'L'; bt.bsp = isFinite(row.bsp) ? row.bsp : null; changed = true; core.info('settled ' + bt.meet + ' ' + bt.horse + ' ' + bt.result + ' ' + bt.bsp); }
+            for (const key of Object.keys(byDate)) {
+              const g = byDate[key];
+              const from = new Date(Date.UTC(g.info.y, g.info.m-1, g.info.d-1)).toISOString();
+              const to = new Date(Date.UTC(g.info.y, g.info.m-1, g.info.d+2)).toISOString();
+              const venues = Object.keys(g.venues);
+              const cat = await bapi('listMarketCatalogue', { filter:{ eventTypeIds:['7'], marketCountries:['AU'], marketTypeCodes:['WIN'], venues:venues, marketStartTime:{ from:from, to:to } }, marketProjection:['RUNNER_METADATA','EVENT','MARKET_START_TIME'], maxResults:1000 });
+              core.info(key + ' markets ' + (Array.isArray(cat)?cat.length:JSON.stringify(cat).slice(0,150)));
+              if (!Array.isArray(cat)) continue;
+              const mkts = cat.filter(m => m.event && aestDate(m.marketStartTime)===key);
+              const mids = mkts.map(m => m.marketId);
+              const book = {};
+              for (let i=0;i<mids.length;i+=20){ const bk = await bapi('listMarketBook', { marketIds:mids.slice(i,i+20), priceProjection:{ priceData:['SP_TRADED'] } }); if (Array.isArray(bk)) bk.forEach(mb => { book[mb.marketId] = {}; (mb.runners||[]).forEach(r => book[mb.marketId][r.selectionId] = r); }); }
+              g.bets.forEach(t => {
+                const vm = mkts.filter(m => nz(m.event.venue)===nz(t.meet));
+                let hit=null, mid=null;
+                for (const m of vm){ const rn = (m.runners||[]).find(r => nz(r.runnerName)===nz(t.horse)); if (rn){ hit=rn; mid=m.marketId; break; } }
+                if (!hit){ core.info('no match ' + t.meet + ' ' + t.horse); return; }
+                const bkr = book[mid] && book[mid][hit.selectionId];
+                if (!bkr){ core.info('no book ' + t.horse); return; }
+                if (bkr.status === 'REMOVED'){ t.result='V'; t.bsp=null; changed=true; return; }
+                t.result = bkr.status === 'WINNER' ? 'W' : 'L';
+                const sp = bkr.sp && bkr.sp.actualSP;
+                t.bsp = (typeof sp==='number' && isFinite(sp) && sp>0) ? Math.round(sp*100)/100 : null;
+                changed = true;
+                core.info('settled ' + t.meet + ' ' + t.horse + ' ' + t.result + ' ' + t.bsp);
+              });
             }
-            if (changed) { const out = html.slice(0, a) + JSON.stringify(T) + html.slice(b+1); fs.writeFileSync('index.html', out); core.info('updated index.html'); } else { core.info('no changes'); }
+            if (changed) { const out = html.slice(0,a) + JSON.stringify(T) + html.slice(b+1); fs.writeFileSync('index.html', out); core.info('updated index.html'); } else { core.info('no changes'); }
       - name: Commit
         run: |
           git config user.name settle-bot
           git config user.email actions@github.com
           git add index.html
-          git commit -m 'Auto-settle bets from Betfair SP' || echo no-changes
+          git commit -m 'Auto-settle from Betfair SP API' || echo no-changes
           git push || echo nothing-to-push
