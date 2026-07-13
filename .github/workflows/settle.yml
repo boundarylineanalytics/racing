@@ -20,6 +20,7 @@ jobs:
           script: |
             const fs = require('fs');
             const APP = process.env.BF_APP_KEY, U = process.env.BF_USERNAME, P = process.env.BF_PASSWORD;
+            core.info('appkey len ' + (APP?APP.length:0) + ' user ' + (U?U.length:0));
             const nz = s => (s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
             const pad = n => String(n).padStart(2,'0');
             const months = {January:1,February:2,March:3,April:4,May:5,June:6,July:7,August:8,September:9,October:10,November:11,December:12};
@@ -28,7 +29,9 @@ jobs:
             const b = html.indexOf('];', a);
             const T = JSON.parse(html.slice(a, b+1));
             const lr = await fetch('https://identitysso.betfair.com/api/login', { method:'POST', headers:{ 'X-Application':APP, 'Content-Type':'application/x-www-form-urlencoded', 'Accept':'application/json' }, body:'username='+encodeURIComponent(U)+'&password='+encodeURIComponent(P) });
-            const lj = await lr.json();
+            const lt = await lr.text();
+            core.info('login http ' + lr.status + ' :: ' + lt.slice(0,220));
+            let lj; try { lj = JSON.parse(lt); } catch(e) { core.info('login not JSON'); return; }
             core.info('login ' + lj.status + ' ' + (lj.error||''));
             if (lj.status !== 'SUCCESS') { return; }
             const TOKEN = lj.token;
