@@ -16,11 +16,14 @@ jobs:
           BF_APP_KEY: ${{ secrets.BF_APP_KEY }}
           BF_USERNAME: ${{ secrets.BF_USERNAME }}
           BF_PASSWORD: ${{ secrets.BF_PASSWORD }}
+          BF_CERT: ${{ secrets.BF_CERT }}
+          BF_KEY: ${{ secrets.BF_KEY }}
         with:
           script: |
             const fs = require('fs');
-            const APP = process.env.BF_APP_KEY, U = process.env.BF_USERNAME, P = process.env.BF_PASSWORD;
-            core.info('appkey len ' + (APP?APP.length:0) + ' user ' + (U?U.length:0));
+            const https = require('https');
+            const APP = process.env.BF_APP_KEY, U = process.env.BF_USERNAME, P = process.env.BF_PASSWORD, CERT = process.env.BF_CERT, KEY = process.env.BF_KEY;
+            core.info('secrets app ' + (APP?APP.length:0) + ' user ' + (U?U.length:0) + ' cert ' + (CERT?CERT.length:0) + ' key ' + (KEY?KEY.length:0));
             const nz = s => (s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
             const pad = n => String(n).padStart(2,'0');
             const months = {January:1,February:2,March:3,April:4,May:5,June:6,July:7,August:8,September:9,October:10,November:11,December:12};
@@ -28,13 +31,13 @@ jobs:
             const a = html.indexOf('var T=') + 6;
             const b = html.indexOf('];', a);
             const T = JSON.parse(html.slice(a, b+1));
-            const lr = await fetch('https://identitysso.betfair.com/api/login', { method:'POST', headers:{ 'X-Application':APP, 'Content-Type':'application/x-www-form-urlencoded', 'Accept':'application/json' }, body:'username='+encodeURIComponent(U)+'&password='+encodeURIComponent(P) });
-            const lt = await lr.text();
-            core.info('login http ' + lr.status + ' :: ' + lt.slice(0,220));
-            let lj; try { lj = JSON.parse(lt); } catch(e) { core.info('login not JSON'); return; }
-            core.info('login ' + lj.status + ' ' + (lj.error||''));
-            if (lj.status !== 'SUCCESS') { return; }
-            const TOKEN = lj.token;
+            function certLogin(){ return new Promise((resolve) => { const body = 'username='+encodeURIComponent(U)+'&password='+encodeURIComponent(P); const req = https.request({ host:'identitysso-cert.betfair.com', port:443, path:'/api/certlogin', method:'POST', cert:CERT, key:KEY, headers:{ 'X-Application':APP, 'Content-Type':'application/x-www-form-urlencoded', 'Content-Length':Buffer.byteLength(body), 'Accept':'application/json' } }, (res) => { let d=''; res.on('data', c => d+=c); res.on('end', () => resolve({ status:res.statusCode, body:d })); }); req.on('error', e => resolve({ status:0, body:'ERR '+e.message })); req.write(body); req.end(); }); }
+            const login = await certLogin();
+            core.info('certlogin http ' + login.status + ' :: ' + String(login.body).slice(0,200));
+            let lj; try { lj = JSON.parse(login.body); } catch(e){ core.info('login not JSON'); return; }
+            core.info('loginStatus ' + (lj.loginStatus||lj.status));
+            if ((lj.loginStatus||lj.status) !== 'SUCCESS') { return; }
+            const TOKEN = lj.sessionToken || lj.token;
             async function bapi(op, body){ const r = await fetch('https://api.betfair.com/exchange/betting/rest/v1.0/'+op+'/', { method:'POST', headers:{ 'X-Application':APP, 'X-Authentication':TOKEN, 'Content-Type':'application/json', 'Accept':'application/json' }, body:JSON.stringify(body) }); return r.json(); }
             function betInfo(t){ const p = t.date.split(' '); return { y:2026, m:months[p[2]], d:parseInt(p[1],10) }; }
             function aestDate(iso){ const t = new Date(iso).getTime() + 10*3600*1000; const d = new Date(t); return d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1)+'-'+pad(d.getUTCDate()); }
@@ -46,8 +49,7 @@ jobs:
               const g = byDate[key];
               const from = new Date(Date.UTC(g.info.y, g.info.m-1, g.info.d-1)).toISOString();
               const to = new Date(Date.UTC(g.info.y, g.info.m-1, g.info.d+2)).toISOString();
-              const venues = Object.keys(g.venues);
-              const cat = await bapi('listMarketCatalogue', { filter:{ eventTypeIds:['7'], marketCountries:['AU'], marketTypeCodes:['WIN'], venues:venues, marketStartTime:{ from:from, to:to } }, marketProjection:['RUNNER_METADATA','EVENT','MARKET_START_TIME'], maxResults:1000 });
+              const cat = await bapi('listMarketCatalogue', { filter:{ eventTypeIds:['7'], marketCountries:['AU'], marketTypeCodes:['WIN'], venues:Object.keys(g.venues), marketStartTime:{ from:from, to:to } }, marketProjection:['RUNNER_METADATA','EVENT','MARKET_START_TIME'], maxResults:1000 });
               core.info(key + ' markets ' + (Array.isArray(cat)?cat.length:JSON.stringify(cat).slice(0,150)));
               if (!Array.isArray(cat)) continue;
               const mkts = cat.filter(m => m.event && aestDate(m.marketStartTime)===key);
@@ -75,5 +77,5 @@ jobs:
           git config user.name settle-bot
           git config user.email actions@github.com
           git add index.html
-          git commit -m 'Auto-settle from Betfair SP API' || echo no-changes
+          git commit -m 'Auto-settle from Betfair SP (cert)' || echo no-changes
           git push || echo nothing-to-push
